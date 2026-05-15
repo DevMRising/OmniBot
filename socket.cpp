@@ -18,7 +18,7 @@ using namespace std;
     int rand_port = rand() % (65535 - 49152 + 1) + 49152;
     cout << "Port: " << rand_port << "\n";
     sockaddr_in hint;
-    hint.sin_family = AF_INET;
+    hint.sin_family = AF_INET; // IPv4 family
     hint.sin_port = htons(rand_port);
     inet_pton(AF_INET,"0.0.0.0",&hint.sin_addr);
     
@@ -52,7 +52,7 @@ using namespace std;
     memset(svc,0,NI_MAXSERV);
 
     int result = getnameinfo((sockaddr*)&client, clientSize, host,NI_MAXHOST,svc,NI_MAXSERV,0);
-    if (result)
+    if (!result)
     {
         cout << host << " connected on " << svc << "\n"; 
     }
@@ -83,9 +83,6 @@ using namespace std;
         cout << "Recieved: " << string(buf,0,bytesRecv) << "\n";
 
         send(clientSocket, buf , bytesRecv + 1, 0);
-
-
-
     }
     close(clientSocket);
 
