@@ -3,6 +3,7 @@
 #include <AsyncTCP_RP2040W.h>
 #include <math.h>
 #include <vector>
+#include <string>
 
 #define PIN_BACKLEFT_F      7
 #define PIN_BACKLEFT_R      6
@@ -31,6 +32,10 @@ void handleNewClient(void*arg, AsyncClient* client)
     Serial.print(clientIP);
     Serial.print(": ");
     Serial.write((uint8_t*)data,len);
+    if ((string*)data == "ON"){
+      digitalWrite(LED_BUILTIN, );
+    }
+    
   } , NULL);
 
   client->onDisconnect([](void* arg, AsyncClient* c)
