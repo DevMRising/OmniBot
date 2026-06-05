@@ -2,7 +2,10 @@
 #include <AsyncTCP_RP2040W.h>
 #include <AsyncUDP_RP2040W.h>
 #include <vector>
-
+#include <regex>
+#include <queue>
+#include <string>
+using namespace std;
 //Управляющие линии задних колес
 #define PIN_BACKLEFT_F      7
 #define PIN_BACKLEFT_R      6
@@ -28,15 +31,24 @@
 #define PIN_ENC_FORWARDRIGHT_B  14
 
 //TCP-порт для одиночных команд управления вектором движения Omnibot
-#define PORT          5698
+#define PORT          6767
 //Размер буфера приема по TCP-порту
 #define REPLY_SIZE      64
-
-double r = 0.04;        //Радиус Mecanum-колеса,
+struct Task{
+  double Speed;
+  double Alpha;
+  double Omega;
+  double Time;
+  unsigned long startMicros;
+};
+queue<Task> taskQueue;
+bool taskActive = false;
+Task currentTask;
+double r  = 0.04;        //Радиус Mecanum-колеса,
 double lx = 0.055;      //Расстояние от продольной оси шасси до продольной линии опоры колес, м
 double ly = 0.1;        //Расстояние от поперечной оси шасси до линии осей колес, м
 
-static std::vector<AsyncClient*> clients; //Список клиентов TCP-сервера
+static vector<AsyncClient*> clients; //Список клиентов TCP-сервера
 char ssid[] = "RoboLab";      //Идентификатор WiFi-сети робота (в режиме: "точка доступа" - AP)
 //char ssid[] = "Omnibot";      //Идентификатор WiFi-сети робота (в режиме: "точка доступа" - AP)
 char pass[] = "Qwe123!!";     //Пароль доступа к WiFi-сети
@@ -262,7 +274,41 @@ static void handleError(void* arg, AsyncClient* client, int8_t error)
   (void) arg;
   Serial.printf("\nОшибка соединения %s с клиентом %s \n", client->errorToString(error), client->remoteIP().toString().c_str());
 }
-
+void PrintOut(vector<vector<double>> arr)
+{
+    for (const auto& row : arr)
+    {
+      for (double val : row)
+      {
+        Serial.print(val);
+        Serial.print(" ");
+      }
+      Serial.print("\n");
+    }
+}
+queue<Task> Parse(string arg)
+{
+  queue<Task> QueueTask;
+  regex regrow(R"(\[((-?\d+(\.\d+)?)\,?){4}\])");
+  regex regcol(R"(-?(\d+)(\.\d+)?)");
+  sregex_iterator arg_begin(arg.begin(),arg.end(),regrow);
+  sregex_iterator arg_end;
+  for (sregex_iterator i = arg_begin; i != arg_end; ++i)
+  {
+    smatch match = *i;
+    string row_str = match.str();
+    sregex_token_iterator row_begin(row_str.begin(), row_str.end(),regcol);
+    sregex_token_iterator row_end;
+    Task task;
+    sregex_token_iterator j = row_begin;
+    task.Speed = stod(*j); ++j;
+    task.Alpha = stod(*j); ++j;
+    task.Omega = stod(*j); ++j;
+    task.Time  = stod(*j);
+    QueueTask.push(task);
+  }
+  return QueueTask;
+}
 //Обработчик приема данных от сетевого клиента
 static void handleData(void* arg, AsyncClient* client, void *data, size_t len)
 {
@@ -271,40 +317,29 @@ static void handleData(void* arg, AsyncClient* client, void *data, size_t len)
   Serial.printf("\nОт клиента получены данные: %s \n", client->remoteIP().toString().c_str());
   Serial.write((uint8_t*)data, len);
   //Анализ (данных) командной строки
-  char delimiter[] = ";";
-  char *value = strtok((char*)data, delimiter);
-  double Speed=atof(value);
-  Serial.printf("\nСкорость движения, м/с: %.2f%\n",Speed);
-  value = strtok(NULL, delimiter);
-  double Alpha=atof(value);
-  Serial.printf("Направление движения, рад: %.2f%\n",Alpha);
-  value = strtok(NULL, delimiter);
-  double Omega=atof(value);
-  Serial.printf("Угловая скорость шасси, рад/с: %.2f%\n",Omega);
-  if(Speed==0 && Omega==0){
-    BackLeftMotor.setOmega(0); 
-    BackRightMotor.setOmega(0);
-    ForwardLeftMotor.setOmega(0);
-    ForwardRightMotor.setOmega(0);
-    delay(500);
-    BackLeftMotor.setPosition(BackLeftMotor.getAngle()); 
-    BackRightMotor.setPosition(BackRightMotor.getAngle());
-    ForwardLeftMotor.setPosition(ForwardLeftMotor.getAngle());
-    ForwardRightMotor.setPosition(ForwardRightMotor.getAngle()); 
-  } else {
-  //Обработка данных: расчет угловых скоростей колес робота
-    double Vx = Speed * cos(Alpha);
-    double Vy = Speed * sin(Alpha);
-    double lfW=(Vx-Vy-(lx+ly)*Omega)/r;
-    double rfW=(Vx+Vy+(lx+ly)*Omega)/r;
-    double lbW=(Vx+Vy-(lx+ly)*Omega)/r;
-    double rbW=(Vx-Vy+(lx+ly)*Omega)/r;
-    //Настройка ПИД-регуляторов колес 
-    BackLeftMotor.setOmega(lbW); 
-    BackRightMotor.setOmega(rbW);
-    ForwardLeftMotor.setOmega(lfW);
-    ForwardRightMotor.setOmega(rfW);
+  string value = (char*)data;
+  queue<Task> parsed = Parse(value);
+  Serial.println("\n=== Task Queue ===");
+  if (parsed.empty()) {
+    Serial.println("Queue is empty");
+    return;
   }
+  
+  // Make a temporary copy because queue doesn't allow iteration
+  queue<Task> temp = parsed;
+  int idx = 0;
+  while (!temp.empty()) {
+    Task t = temp.front();
+    temp.pop();
+    Serial.printf("%d: Speed=%.3f, Alpha=%.3f, Omega=%.3f, Time=%.3f\n",
+                  idx++, t.Speed, t.Alpha, t.Omega, t.Time);
+  }
+  Serial.println("=================\n");
+  while (!parsed.empty()) {
+    taskQueue.push(parsed.front());
+    parsed.pop();
+  }
+  
   //Ответ клиенту
   if (client->space() > REPLY_SIZE && client->canSend())
   {
@@ -383,6 +418,7 @@ void Init_Wifi(){
   Serial.println(serverIP);
 }
 
+
 void TCP_Init(AsyncServer* server)
 {
   server->onClient(&handleNewClient, server);       //Регистрация процедура обработки клиентских запросов
@@ -398,8 +434,8 @@ void TCP_Init(AsyncServer* server)
 
 void UDP_Init(AsyncUDP UDP)
 {
-  if (UDP.listen(PORT)) {
-    Serial.printf("Now listening on UDP port %d\n", PORT);
+  if (UDP.listen(PORT+1)) {
+    Serial.printf("Now listening on UDP port %d\n", PORT+1);
     UDP.onPacket([](AsyncUDPPacket packet) {
       Serial.printf("Packet received! Type: %s, From: %s:%d, Length: %d, Data: %s\n",
                     packet.isBroadcast() ? "Broadcast" : packet.isMulticast() ? "Multicast" : "Unicast",
@@ -431,20 +467,67 @@ void setup() {
   timerPID.attach(0.001,timer_ISR);
 
   Init_Wifi();  //Инициализация WiFi
+  delay(5000);
+  AsyncServer* TCP_server = new AsyncServer(PORT); //Создание объекта TCP-сервера
+  AsyncUDP UDP;//Запуск сервера по порту 6767
+  TCP_Init(TCP_server);
+
 }
 //Циклическая процедура, выполняемая на нулевом ядре микроконтроллера
-void loop() {
+void loop() 
+{
+  if (!taskActive && !taskQueue.empty()) {
+    currentTask = taskQueue.front();
+    taskQueue.pop();
+    taskActive = true;
+    currentTask.startMicros = micros();
 
+    // Kinematics: convert speed, angle, omega to wheel angular velocities
+    double Vx = currentTask.Speed * cos(currentTask.Alpha);
+    double Vy = currentTask.Speed * sin(currentTask.Alpha);
+    double L = lx + ly;   // pre‑computed, but you can compute here
+    double lbW = (Vx + Vy - L * currentTask.Omega) / r;
+    double rbW = (Vx - Vy + L * currentTask.Omega) / r;
+    double lfW = (Vx - Vy - L * currentTask.Omega) / r;
+    double rfW = (Vx + Vy + L * currentTask.Omega) / r;
+
+    BackLeftMotor.setOmega(lbW);
+    BackRightMotor.setOmega(rbW);
+    ForwardLeftMotor.setOmega(lfW);
+    ForwardRightMotor.setOmega(rfW);
+
+    Serial.printf("Start task: Speed=%.2f, Alpha=%.2f, Omega=%.2f, Duration=%.2f\n",
+                  currentTask.Speed, currentTask.Alpha, currentTask.Omega, currentTask.Time);
+  }
+  // 2. If a task is active, check if its time has elapsed
+  else if (taskActive) {
+    unsigned long now = micros();
+    unsigned long elapsed = now - currentTask.startMicros;
+    if (elapsed >= (unsigned long)(currentTask.Time * 1e6)) {
+      // Stop all motors
+      BackLeftMotor.setOmega(0);
+      BackRightMotor.setOmega(0);
+      ForwardLeftMotor.setOmega(0);
+      ForwardRightMotor.setOmega(0);
+      taskActive = false;
+      Serial.println("Task finished, motors stopped.");
+    }
+  }
+
+  // 3. (Optional) Run PID manually if Ticker is unreliable
+  //    Remove this block if Ticker works correctly.
+  static unsigned long lastPIDmicros = 0;
+  if (micros() - lastPIDmicros >= 1000) {
+    lastPIDmicros = micros();
+    timer_ISR();   // calls ControlOmega() on all motors
+  }
+
+  // Small delay to yield to WiFi stack
+  delayMicroseconds(100);
 }
 
 //Процедура инициализация, выполняемая на дополнительном (первом) ядре микроконтроллера RP2040=====================
 void setup1(){
-  delay(5000);
-  //Создание объекта TCP-сервера
-  AsyncServer* TCP_server = new AsyncServer(PORT);
-  AsyncUDP UDP;
-  // TCP_Init(TCP_server);  //Запуск сервера по порту 5698
-  // UDP_Init(UDP);
 }
 
 //Циклическая процедура, выполняемая на первом ядре микроконтроллера
